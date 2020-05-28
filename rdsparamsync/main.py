@@ -311,7 +311,7 @@ def db(target_db_url, other_db_url):
             if a.name() == b.name():
                 if a != b:
                     diff += 1
-                    table.add_row([a.name(), a.value(), b.value(), a.unit()])
+                    table.add_row([a.name(), a.value(), b.value(), a.unit().lower()])
 
     if diff == 0:
         _result("No differences.")
