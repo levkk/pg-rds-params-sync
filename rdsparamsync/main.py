@@ -1,4 +1,5 @@
 """
+Compare parameters between two databases or parameter groups to catch drift.
 """
 import psycopg2  # Postgres
 import click  # CLI
@@ -9,22 +10,25 @@ import os
 import subprocess
 import json
 import re
-import logging
-
-logger = logging.getLogger()
 
 from prettytable import PrettyTable  # Pretty table output
 from colorama import Fore
 
+VERSION = '0.1-alpha1'
+
 colorama.init()
 
+__version__ = VERSION
+__author__ = 'lev.kokotov@instacart.com'
 
 def _error(text):
+    """Print a nice error to the screen and exit."""
     print(Fore.RED, "\b{}".format(text), Fore.RESET)
     exit(1)
 
 
 def _result(text):
+    """Print a nice green message to the screen."""
     print(Fore.GREEN, "\b{}".format(text), Fore.RESET)
 
 
@@ -35,7 +39,7 @@ def _json(command):
 
 # I don't have to paginate myself, it's nice
 def _parameter_group(name):
-    """Get the Parameter Group from AWS API."""
+    """Get the Parameter Group from AWS API. Parse it also."""
     return _json(
         "aws rds describe-db-parameters --db-parameter-group-name {}".format(name)
     )
@@ -64,7 +68,7 @@ def _find(parameter, parameter_group):
         p = RDSParameter(p)
         if p.name() == parameter:
             return p
-    return None
+    return UnknownPostgreSQLParameter({"name": parameter})
 
 
 def _exec(cur, query, params=None):
@@ -83,10 +87,13 @@ def _conn(db_url):
 
 
 class Parameter:
+    """Base class representing a database configuration parameter."""
+
     def __init__(self, data):
         assert data is not None
         self.data = data
 
+    ### Have to be implemented methods.
     def name(self):
         raise NotImplementedError
 
@@ -99,7 +106,11 @@ class Parameter:
     def allowed_values(self):
         return NotImplementedError
 
+    ###
+
+    # Still a WIP
     def normalize(self):
+        """Translate a parameter into a human readable form."""
         # Handle the unset case:
         if self.value() == "-1":
             return self.value()
@@ -141,6 +152,9 @@ class Parameter:
 
 
 class RDSParameter(Parameter):
+    """Represents a parameter retrieved from AWS CLI.
+    It parses a lot of useful info."""
+
     def name(self):
         return self.data["ParameterName"]
 
@@ -191,11 +205,14 @@ class RDSParameter(Parameter):
 
 
 class PostgreSQLParameter(Parameter):
+    """Represents a parameter retrieved directly
+    from the PostgreSQL database."""
+
     def name(self):
         return self.data["name"]
 
     def value(self):
-        return self.data["setting"]
+        return self.data["setting"][:50]
 
     def unit(self):
         try:
@@ -220,16 +237,27 @@ class PostgreSQLParameter(Parameter):
 
     @classmethod
     def from_db(cls, name, conn):
+        """Get and parse the parameter from the database."""
         param = _exec(
             conn, "SELECT * FROM pg_settings WHERE name = %s", (name,)
         ).fetchone()
         if param is None:
+            print("Unknown parameter: {}".format(name))
             return UnknownPostgreSQLParameter(name)
         else:
             return cls(param)
 
+    @classmethod
+    def all_settings(cls, conn):
+        """Get and parse all parameters from the database."""
+        params = _exec(conn, "SELECT * FROM pg_settings").fetchall()
+        return list(map(lambda x: cls(x), params))
+
 
 class UnknownPostgreSQLParameter(PostgreSQLParameter):
+    """Represents an unknown PostgreSQL parameter. Effectively
+    the "is None" case."""
+
     def __init__(self, name):
         super().__init__({"name": name})
 
@@ -246,14 +274,52 @@ class UnknownPostgreSQLParameter(PostgreSQLParameter):
         return []
 
 
-@click.command()
-# TODO: Figure out how to get creds automatically based on target_db and other_db
-# @click.option(
-#     "--db-url",
-#     required=False,
-#     default=None,
-#     help="The connection string for the PostgreSQL database.",
-# )
+# CLI
+@click.group()
+def main():
+    pass
+
+
+# TODO: Figure out how to get creds automatically based on database identifier.
+@main.command()
+@click.option(
+    "--target-db-url", required=True, help="DSN for the target database.",
+)
+@click.option(
+    "--other-db-url", required=True, help="DSN for the database to compare to."
+)
+def db(target_db_url, other_db_url):
+    """Compare target DB to other DB using PostgreSQL settings."""
+    ca, ra = _conn(target_db_url)
+    cb, rb = _conn(other_db_url)
+
+    params_a = PostgreSQLParameter.all_settings(ra)
+    params_b = PostgreSQLParameter.all_settings(rb)
+
+    table = PrettyTable(
+        [
+            "Name",
+            ca.get_dsn_parameters()["host"],
+            cb.get_dsn_parameters()["host"],
+            "Unit",
+        ]
+    )
+
+    diff = 0
+    for a in params_a:
+        for b in params_b:
+            if a.name() == b.name():
+                if a != b:
+                    diff += 1
+                    table.add_row([a.name(), a.value(), b.value(), a.unit()])
+
+    if diff == 0:
+        _result("No differences.")
+    else:
+        print(table)
+
+
+@main.command()
 @click.option(
     "--target-db", required=True, help="The target database.",
 )
@@ -261,9 +327,8 @@ class UnknownPostgreSQLParameter(PostgreSQLParameter):
     "--parameter-group", required=False, help="Parameter group to compare to.",
 )
 @click.option("--other-db", required=False, help="Database to compare to.")
-def main(target_db, parameter_group, other_db):
-    """Compare target_db to either a parameter_group or other_db. The tool will
-    show the different parameters."""
+def pg(target_db, parameter_group, other_db):
+    """Compare target DB to other DB using Parameter Groups."""
     parameter_group_a = _parameter_group(_parameter_group_form_db(target_db))[
         "Parameters"
     ]
@@ -283,8 +348,7 @@ def main(target_db, parameter_group, other_db):
     for a in parameter_group_a:
         a = RDSParameter(a)
         b = _find(a.name(), parameter_group_b)
-        if b is None:
-            b = UnknownPostgreSQLParameter({"name": a.name()})
+
         if a != b:
             diffs += 1
             table.add_row([a.name(), a.value(), b.value(), b.unit().lower()])
@@ -293,7 +357,3 @@ def main(target_db, parameter_group, other_db):
         _result("No differences.")
     else:
         print(table)
-
-
-if __name__ == "__main__":
-    main()

@@ -1,3 +1,3 @@
 from . import main
 
-main()
+main(prog_name="rdsparamsync")
