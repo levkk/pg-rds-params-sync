@@ -23,6 +23,7 @@ def _error(text):
     print(Fore.RED, "\b{}".format(text), Fore.RESET)
     exit(1)
 
+
 def _result(text):
     print(Fore.GREEN, "\b{}".format(text), Fore.RESET)
 
@@ -31,13 +32,12 @@ def _json(command):
     """Parse JSON returned by a CLI command."""
     return json.loads(subprocess.check_output(command.split(" ")))
 
+
 # I don't have to paginate myself, it's nice
 def _parameter_group(name):
     """Get the Parameter Group from AWS API."""
     return _json(
-        "aws rds describe-db-parameters --db-parameter-group-name {}".format(
-            name
-        )
+        "aws rds describe-db-parameters --db-parameter-group-name {}".format(name)
     )
 
 
@@ -51,9 +51,7 @@ def _parameter_group_form_db(db_identifier):
         _error("Database doesn't exist: {}".format(db_identifier))
 
     db_instance = response["DBInstances"][0]
-    db_parameter_group = db_instance["DBParameterGroups"][0][
-        "DBParameterGroupName"
-    ]
+    db_parameter_group = db_instance["DBParameterGroups"][0]["DBParameterGroupName"]
 
     return db_parameter_group
 
@@ -68,10 +66,12 @@ def _find(parameter, parameter_group):
             return p
     return None
 
+
 def _exec(cur, query, params=None):
     """Execute a query and return the cursor. Useful for debugging."""
     cur.execute(query, params)
     return cur
+
 
 def _conn(db_url):
     """Create a connection to a database."""
@@ -148,7 +148,7 @@ class RDSParameter(Parameter):
         try:
             return self.data["ParameterValue"]
         except KeyError:
-            return 'Engine default'
+            return "Engine default"
 
     def type(self):
         return self.data["DataType"]
@@ -254,31 +254,27 @@ class UnknownPostgreSQLParameter(PostgreSQLParameter):
 #     help="The connection string for the PostgreSQL database.",
 # )
 @click.option(
-    "--target-db",
-    required=True,
-    help="The target database.",
+    "--target-db", required=True, help="The target database.",
 )
 @click.option(
-    "--parameter-group",
-    required=False,
-    help="Parameter group to compare to.",
+    "--parameter-group", required=False, help="Parameter group to compare to.",
 )
-@click.option(
-    "--other-db",
-    required=False,
-    help="Database to compare to."
-)
+@click.option("--other-db", required=False, help="Database to compare to.")
 def main(target_db, parameter_group, other_db):
     # Give me one or the other
     # assert db_identifier is not None and parameter_group is not None
 
     # else:
-        # parameter_group_name = parameter_group
+    # parameter_group_name = parameter_group
 
-    parameter_group_a = _parameter_group(_parameter_group_form_db(target_db))["Parameters"]
+    parameter_group_a = _parameter_group(_parameter_group_form_db(target_db))[
+        "Parameters"
+    ]
 
     if parameter_group is None and other_db is not None:
-        parameter_group_b = _parameter_group(_parameter_group_form_db(other_db))["Parameters"]
+        parameter_group_b = _parameter_group(_parameter_group_form_db(other_db))[
+            "Parameters"
+        ]
     elif parameter_group is not None:
         parameter_group_b = _parameter_group(parameter_group)["Parameters"]
     else:
@@ -291,7 +287,7 @@ def main(target_db, parameter_group, other_db):
         a = RDSParameter(a)
         b = _find(a.name(), parameter_group_b)
         if b is None:
-            b = UnknownPostgreSQLParameter({ 'name': a.name() })
+            b = UnknownPostgreSQLParameter({"name": a.name()})
         if a != b:
             diffs += 1
             table.add_row([a.name(), a.value(), b.value(), b.unit().lower()])
