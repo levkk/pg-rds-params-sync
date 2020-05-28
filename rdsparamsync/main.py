@@ -247,6 +247,7 @@ class UnknownPostgreSQLParameter(PostgreSQLParameter):
 
 
 @click.command()
+# TODO: Figure out how to get creds automatically based on target_db and other_db
 # @click.option(
 #     "--db-url",
 #     required=False,
@@ -261,12 +262,8 @@ class UnknownPostgreSQLParameter(PostgreSQLParameter):
 )
 @click.option("--other-db", required=False, help="Database to compare to.")
 def main(target_db, parameter_group, other_db):
-    # Give me one or the other
-    # assert db_identifier is not None and parameter_group is not None
-
-    # else:
-    # parameter_group_name = parameter_group
-
+    """Compare target_db to either a parameter_group or other_db. The tool will
+    show the different parameters."""
     parameter_group_a = _parameter_group(_parameter_group_form_db(target_db))[
         "Parameters"
     ]
