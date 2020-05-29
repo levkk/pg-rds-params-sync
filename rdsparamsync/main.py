@@ -12,19 +12,23 @@ import json
 import re
 from tqdm import tqdm
 from diskcache import Cache
+import csv
+from io import StringIO
 
 from prettytable import PrettyTable  # Pretty table output
 from colorama import Fore
 
-VERSION = '0.1-alpha2'
+VERSION = "0.1-alpha4"
+CACHE_TTL = int(os.environ.get("CACHE_TTL", 3600))
 
 __version__ = VERSION
-__author__ = 'lev.kokotov@instacart.com'
+__author__ = "lev.kokotov@instacart.com"
 
 colorama.init()
 
 # I think /tmp is common enough.
-cache = Cache('/tmp')
+cache = Cache("/tmp")
+
 
 def _error(text, exit_on_error=True):
     """Print a nice error to the screen and exit."""
@@ -62,10 +66,11 @@ def _parameter_group(name):
         value = _json(
             "aws rds describe-db-parameters --db-parameter-group-name {}".format(name)
         )
-        cache.set(name, value, expire=3600) # 1 hour
+        cache.set(name, value, expire=CACHE_TTL)  # 1 hour
         return value
     else:
         return cached
+
 
 def _parameter_group_parameter(parameter_group_name, parameter):
     """Get a specific parameter from a parameter group.
@@ -77,13 +82,15 @@ def _parameter_group_parameter(parameter_group_name, parameter):
     Return:
         class Parameter
     """
-    parameter_groups = RDSParameter.all_parameters(_parameter_group(parameter_group_name)["Parameters"])
+    parameter_groups = RDSParameter.all_parameters(
+        _parameter_group(parameter_group_name)["Parameters"]
+    )
     try:
         p = list(filter(lambda x: x.name() == parameter, parameter_groups))[0]
         return p
     except IndexError:
         # _error("Parameter {} not found in parameter group {}.".format(parameter, parameter_group_name), exit_on_error=False)
-        return UnknownPostgreSQLParameter({'name': parameter})
+        return UnknownPostgreSQLParameter({"name": parameter})
 
 
 def _databases():
@@ -95,7 +102,7 @@ def _databases():
     return _json("aws rds describe-db-instances")
 
 
-def _dbs_and_parameter_groups(skip_without=''):
+def _dbs_and_parameter_groups(skip_without="", exclude_like=None):
     """Get a mapping of databases and their parameter groups.
 
     Arguments:
@@ -110,6 +117,9 @@ def _dbs_and_parameter_groups(skip_without=''):
     for db in dbs["DBInstances"]:
         # Skip some DBs you don't care about
         if skip_without not in db["DBInstanceIdentifier"]:
+            continue
+        # Skip more DBs we don't want
+        if exclude_like is not None and exclude_like in db["DBInstanceIdentifier"]:
             continue
         parameter_group = db["DBParameterGroups"][0]["DBParameterGroupName"]
         result[db["DBInstanceIdentifier"]] = parameter_group
@@ -348,10 +358,10 @@ class UnknownPostgreSQLParameter(PostgreSQLParameter):
         return "UNSET"
 
     def normalize(self):
-        return 'Unknown'
+        return "Unknown"
 
     def value(self):
-        return 'Unknown'
+        return "Unknown"
 
     def allowed_values(self):
         return []
@@ -362,32 +372,62 @@ class UnknownPostgreSQLParameter(PostgreSQLParameter):
 def main():
     pass
 
+
 @main.command()
 @click.option(
-    "--parameters",
-    required=True,
-    help="The parameters to audit, comma-separated."
+    "--parameters", required=True, help="The parameters to audit, comma-separated."
 )
 @click.option(
     "--db-name-like",
     required=False,
-    default='',
-    help="A string to filter out databases by name."
+    default="",
+    help="A string to select databases by name.",
 )
-def audit(parameters, db_name_like):
+@click.option(
+    "--db-exclude-like",
+    required=False,
+    default=None,
+    help="A string to exclude databases by name.",
+)
+@click.option(
+    "--fmt",
+    default="table",
+    required=False,
+    help="The print format to use, either CSV or pretty table.",
+)
+def audit(parameters, db_name_like, db_exclude_like, fmt):
     """Audit database parameter groups for a parameter value."""
-    parameters = list(map(lambda x: x.strip(), parameters.split(',')))
-    dbs = _dbs_and_parameter_groups(db_name_like)
-    table = PrettyTable(["DB", "Parameter Group"] + parameters)
-    for db in tqdm(dbs):
-        parameter_group = dbs[db]
-        values = []
-        for parameter in parameters:
-            parameter_value = _parameter_group_parameter(parameter_group, parameter).value()
-            values.append(parameter_value)
+    # Get all the parameters we want to audit (comma-separated)
+    CSV = "csv"
+    parameters = list(map(lambda x: x.strip(), parameters.split(",")))
 
-        table.add_row([db, parameter_group] + values)
-    print(table)
+    # Fetch all DBs and their parameter group names
+    dbs = _dbs_and_parameter_groups(db_name_like, db_exclude_like)
+
+    headers = ["DB", "Parameter Group"] + parameters
+
+    # For pretty table
+    table = PrettyTable(headers)
+
+    # For CSV output
+    file = StringIO()
+    writer = csv.writer(file)
+    writer.writerow(headers)
+
+    for db in tqdm(dbs, disable=(fmt == CSV)):
+        parameter_group = dbs[db]
+        row = [db, parameter_group]
+        for parameter in parameters:
+            row += [_parameter_group_parameter(parameter_group, parameter).value()]
+        table.add_row(row)
+        writer.writerow(row)  # A little wasteful since we will only show one but...
+    if fmt == CSV:
+        print(file.getvalue())
+    else:
+        print(table)
+
+    # Always close a file
+    file.close()
 
 
 # TODO: Figure out how to get creds automatically based on database identifier.
