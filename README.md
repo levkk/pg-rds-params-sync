@@ -21,6 +21,13 @@ $ pgrdsparamsync audit --parameters=max_wal_size,min_wal_size --db-name-like=pro
 
 It will audit only the databases that contain the string "production" in their name and display `max_wal_size` and `min_wal_size`.
 
+For reporting, we can also print out the above table in CSV format.
+
+Example:
+```bash
+$ pgrdsparamsync audit --parameters=max_wal_size,min_wal_size --fmt=csv
+```
+
 
 ### Compare a database to another or a parameter group
 Example:
