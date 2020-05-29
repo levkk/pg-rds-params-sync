@@ -18,7 +18,7 @@ from io import StringIO
 from prettytable import PrettyTable  # Pretty table output
 from colorama import Fore
 
-VERSION = "0.1-alpha4"
+VERSION = "0.1-alpha5"
 CACHE_TTL = int(os.environ.get("CACHE_TTL", 3600))
 
 __version__ = VERSION
