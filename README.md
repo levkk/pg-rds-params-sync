@@ -59,4 +59,4 @@ RDS parameter groups use formulas to calculate certain settings (e.g. `shared_bu
 
 
 ### Caching
-Fetching parameter groups for 100s of databases is long and expensive. We added a local cache with a 1h TTL. It's stored in `/tmp/cache.db`. The first run of the application will be slow, but subsequent runs will be much faster. To increase the TTL or bust the cache, add an environment variable `CACHE_TTL` with a value that's not 1h, for example `$ export CACHE_TTL=7200` which will set the TTL to 2 hours (7200 seconds).
+Fetching parameter groups for 100s of databases is long and expensive. We added a local cache with a 1h TTL. It's stored in `/tmp/pgrdsparamsync`. The first run of the application will be slow, but subsequent runs will be much faster. To increase the TTL or bust the cache, add an environment variable `CACHE_TTL` with a value that's not 1h, for example `$ export CACHE_TTL=7200` which will set the TTL to 2 hours (7200 seconds).

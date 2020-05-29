@@ -27,7 +27,7 @@ __author__ = "lev.kokotov@instacart.com"
 colorama.init()
 
 # I think /tmp is common enough.
-cache = Cache("/tmp")
+cache = Cache("/tmp/pgrdsparamsync")
 
 
 def _error(text, exit_on_error=True):
