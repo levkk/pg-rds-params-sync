@@ -10,21 +10,27 @@ import os
 import subprocess
 import json
 import re
+from tqdm import tqdm
+from diskcache import Cache
 
 from prettytable import PrettyTable  # Pretty table output
 from colorama import Fore
 
 VERSION = '0.1-alpha1'
 
-colorama.init()
-
 __version__ = VERSION
 __author__ = 'lev.kokotov@instacart.com'
 
-def _error(text):
+colorama.init()
+
+# I think /tmp is common enough.
+cache = Cache('/tmp')
+
+def _error(text, exit_on_error=True):
     """Print a nice error to the screen and exit."""
     print(Fore.RED, "\b{}".format(text), Fore.RESET)
-    exit(1)
+    if exit_on_error:
+        exit(1)
 
 
 def _result(text):
@@ -34,19 +40,92 @@ def _result(text):
 
 def _json(command):
     """Parse JSON returned by a CLI command."""
-    return json.loads(subprocess.check_output(command.split(" ")))
+    try:
+        return json.loads(subprocess.check_output(command.split(" ")))
+    except subprocess.CalledProcessError:
+        # Let the CLI output the error
+        exit(1)
 
 
 # I don't have to paginate myself, it's nice
 def _parameter_group(name):
-    """Get the Parameter Group from AWS API. Parse it also."""
-    return _json(
-        "aws rds describe-db-parameters --db-parameter-group-name {}".format(name)
-    )
+    """Get the Parameter Group from AWS API (or cache). Parse it also.
+
+    Arguments:
+        - name: Parameter group name
+
+    Return:
+        dict from parsed json given by AWS API
+    """
+    cached = cache.get(name)
+    if cached is None:
+        value = _json(
+            "aws rds describe-db-parameters --db-parameter-group-name {}".format(name)
+        )
+        cache.set(name, value, expire=3600) # 1 hour
+        return value
+    else:
+        return cached
+
+def _parameter_group_parameter(parameter_group_name, parameter):
+    """Get a specific parameter from a parameter group.
+
+    Arguments:
+        - parameter_group_name: The name of the parameter group.
+        - parameter: The name of the parameter.
+
+    Return:
+        class Parameter
+    """
+    parameter_groups = RDSParameter.all_parameters(_parameter_group(parameter_group_name)["Parameters"])
+    try:
+        p = list(filter(lambda x: x.name() == parameter, parameter_groups))[0]
+        return p
+    except IndexError:
+        # _error("Parameter {} not found in parameter group {}.".format(parameter, parameter_group_name), exit_on_error=False)
+        return UnknownPostgreSQLParameter({'name': parameter})
+
+
+def _databases():
+    """Get all databases in your account/region.
+
+    Return:
+        list of dict
+    """
+    return _json("aws rds describe-db-instances")
+
+
+def _dbs_and_parameter_groups(skip_without=''):
+    """Get a mapping of databases and their parameter groups.
+
+    Arguments:
+        - skip_without: Do not return databases that do not have that string
+                        in their name.
+
+    Return:
+        dict
+    """
+    dbs = _databases()
+    result = {}
+    for db in dbs["DBInstances"]:
+        # Skip some DBs you don't care about
+        if skip_without not in db["DBInstanceIdentifier"]:
+            continue
+        parameter_group = db["DBParameterGroups"][0]["DBParameterGroupName"]
+        result[db["DBInstanceIdentifier"]] = parameter_group
+    return result
 
 
 def _parameter_group_form_db(db_identifier):
-    """Get the name of the parameter group configured for a database."""
+    """Get the name of the parameter group configured for a database.
+
+    Arguments:
+        - db_identifier: The identifier of the database as appears
+                         in RDS console.
+
+    Return:
+        str
+    """
     rds = boto3.client("rds")
 
     response = rds.describe_db_instances(DBInstanceIdentifier=db_identifier)
@@ -203,6 +282,10 @@ class RDSParameter(Parameter):
         else:
             super().normalize()
 
+    @classmethod
+    def all_parameters(cls, parameters):
+        return list(map(lambda x: cls(x), parameters))
+
 
 class PostgreSQLParameter(Parameter):
     """Represents a parameter retrieved directly
@@ -265,10 +348,10 @@ class UnknownPostgreSQLParameter(PostgreSQLParameter):
         return "UNSET"
 
     def normalize(self):
-        return None
+        return 'Unknown'
 
     def value(self):
-        return None
+        return 'Unknown'
 
     def allowed_values(self):
         return []
@@ -279,6 +362,28 @@ class UnknownPostgreSQLParameter(PostgreSQLParameter):
 def main():
     pass
 
+@main.command()
+@click.option(
+    "--parameter",
+    required=True,
+    help="The parameter to audit."
+)
+@click.option(
+    "--db-name-like",
+    required=False,
+    default='',
+    help="A string to filter out databases by name."
+)
+def audit(parameter, db_name_like):
+    """Audit database parameter groups for a parameter value."""
+    dbs = _dbs_and_parameter_groups(db_name_like)
+    table = PrettyTable(["DB", "Parameter Group", parameter])
+    for db in tqdm(dbs):
+        parameter_group = dbs[db]
+        parameter_value = _parameter_group_parameter(parameter_group, parameter).value()
+        table.add_row([db, parameter_group, parameter_value])
+    print(table)
+
 
 # TODO: Figure out how to get creds automatically based on database identifier.
 @main.command()
@@ -288,13 +393,19 @@ def main():
 @click.option(
     "--other-db-url", required=True, help="DSN for the database to compare to."
 )
-def db(target_db_url, other_db_url):
+def pg_compare(target_db_url, other_db_url):
     """Compare target DB to other DB using PostgreSQL settings."""
     ca, ra = _conn(target_db_url)
     cb, rb = _conn(other_db_url)
 
     params_a = PostgreSQLParameter.all_settings(ra)
     params_b = PostgreSQLParameter.all_settings(rb)
+
+    host_a = ca.get_dsn_parameters()["host"]
+    host_b = cb.get_dsn_parameters()["host"]
+
+    if host_a == host_b:
+        _error("Target database and other database are the same database.")
 
     table = PrettyTable(
         [
@@ -327,7 +438,7 @@ def db(target_db_url, other_db_url):
     "--parameter-group", required=False, help="Parameter group to compare to.",
 )
 @click.option("--other-db", required=False, help="Database to compare to.")
-def pg(target_db, parameter_group, other_db):
+def rds_compare(target_db, parameter_group, other_db):
     """Compare target DB to other DB using Parameter Groups."""
     parameter_group_a = _parameter_group(_parameter_group_form_db(target_db))[
         "Parameters"
