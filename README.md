@@ -3,10 +3,10 @@ Compare PostgreSQL settings between two databases to detect drift.
 
 ## Features
 
-### Audit a particular setting
+### Audit particular settings
 Example:
 ```bash
-$ pgrdsparamsync audit --parameter=max_wal_size
+$ pgrdsparamsync audit --parameters=max_wal_size
 ```
 
 It will get all the databases in the account and region and display their `max_wal_size` value. 
@@ -16,10 +16,10 @@ If only a subset of databases is of interest, `--db-name-like` can be used to fi
 
 Example:
 ```bash
-$ pgrdsparamsync audit --parameter=max_wal_size --db-name-like=production
+$ pgrdsparamsync audit --parameters=max_wal_size,min_wal_size --db-name-like=production
 ```
 
-It will audit only the databases that contain the string "production" in their name.
+It will audit only the databases that contain the string "production" in their name and display `max_wal_size` and `min_wal_size`.
 
 
 ### Compare a database to another or a parameter group

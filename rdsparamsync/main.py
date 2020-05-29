@@ -16,7 +16,7 @@ from diskcache import Cache
 from prettytable import PrettyTable  # Pretty table output
 from colorama import Fore
 
-VERSION = '0.1-alpha1'
+VERSION = '0.1-alpha2'
 
 __version__ = VERSION
 __author__ = 'lev.kokotov@instacart.com'
@@ -364,9 +364,9 @@ def main():
 
 @main.command()
 @click.option(
-    "--parameter",
+    "--parameters",
     required=True,
-    help="The parameter to audit."
+    help="The parameters to audit, comma-separated."
 )
 @click.option(
     "--db-name-like",
@@ -374,14 +374,19 @@ def main():
     default='',
     help="A string to filter out databases by name."
 )
-def audit(parameter, db_name_like):
+def audit(parameters, db_name_like):
     """Audit database parameter groups for a parameter value."""
+    parameters = list(map(lambda x: x.strip(), parameters.split(',')))
     dbs = _dbs_and_parameter_groups(db_name_like)
-    table = PrettyTable(["DB", "Parameter Group", parameter])
+    table = PrettyTable(["DB", "Parameter Group"] + parameters)
     for db in tqdm(dbs):
         parameter_group = dbs[db]
-        parameter_value = _parameter_group_parameter(parameter_group, parameter).value()
-        table.add_row([db, parameter_group, parameter_value])
+        values = []
+        for parameter in parameters:
+            parameter_value = _parameter_group_parameter(parameter_group, parameter).value()
+            values.append(parameter_value)
+
+        table.add_row([db, parameter_group] + values)
     print(table)
 
 
