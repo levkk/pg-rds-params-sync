@@ -34,7 +34,7 @@ setuptools.setup(
     python_requires='>=3',
     entry_points={
         'console_scripts': [
-            'pgrdsparamsync = pgrdsparamsync:entrypoint',
+            'pgrdsparamsync = rdsparamsync:entrypoint',
         ]
     },
 )
