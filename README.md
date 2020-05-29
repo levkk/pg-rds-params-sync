@@ -49,3 +49,7 @@ $ pgrdsparamsync pg-compare \
 ```
 
 RDS parameter groups use formulas to calculate certain settings (e.g. `shared_buffers`, `effective_cache_size`, etc.) by default. Sometimes, it is useful to know the actual value. This will connect to the databases directly, query `pg_settings`, and print the settings that differ.
+
+
+### Caching
+Fetching parameter groups for 100s of databases is long and expensive. We added a local cache with a 1h TTL. It's stored in `/tmp/cache.db`. The first run of the application will be slow, but subsequent runs will be much faster.
