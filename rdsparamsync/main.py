@@ -18,16 +18,29 @@ from io import StringIO
 from prettytable import PrettyTable  # Pretty table output
 from colorama import Fore
 
-VERSION = "0.1-alpha6"
-CACHE_TTL = int(os.environ.get("CACHE_TTL", 3600))
+VERSION = "0.2"
 
 __version__ = VERSION
-__author__ = "lev.kokotov@instacart.com"
+__author__ = "Lev Kokotov <lev.kokotov@instacart.com>"
+
+# 12 cache hours by default
+CACHE_TTL = int(os.environ.get("CACHE_TTL", 3600 * 12))
 
 colorama.init()
 
 # I think /tmp is common enough.
 cache = Cache("/tmp/pgrdsparamsync")
+
+# We recommend having these values. WIP.
+suggested_parameter_values = {
+    "max_wal_size": "32768",  # Postgres 10+. On <= 9.6 the unit is 16MB.
+    "min_wal_size": "2048",  # Same
+    "checkpoint_timeout": "900",
+    "statement_timeout": "30000",
+    "autovacuum": "1",
+    "autovacuum_vacuum_cost_limit": "2000",
+    "autovacuum_vacuum_cost_delay": "2",
+}
 
 
 def _error(text, exit_on_error=True):
@@ -66,7 +79,7 @@ def _parameter_group(name):
         value = _json(
             "aws rds describe-db-parameters --db-parameter-group-name {}".format(name)
         )
-        cache.set(name, value, expire=CACHE_TTL)  # 1 hour
+        cache.set(name, value, expire=CACHE_TTL)
         return value
     else:
         return cached
@@ -99,7 +112,13 @@ def _databases():
     Return:
         list of dict
     """
-    return _json("aws rds describe-db-instances")
+    cached = cache.get("databases")
+    if cached is None:
+        value = _json("aws rds describe-db-instances")
+        cache.set("databases", value, expire=CACHE_TTL)
+        return value
+    else:
+        return cached
 
 
 def _dbs_and_parameter_groups(skip_without="", exclude_like=None):
@@ -122,7 +141,11 @@ def _dbs_and_parameter_groups(skip_without="", exclude_like=None):
         if exclude_like is not None and exclude_like in db["DBInstanceIdentifier"]:
             continue
         parameter_group = db["DBParameterGroups"][0]["DBParameterGroupName"]
-        result[db["DBInstanceIdentifier"]] = parameter_group
+        engine_version = db["EngineVersion"]
+        result[db["DBInstanceIdentifier"]] = {
+            "DBParameterGroupName": parameter_group,
+            "EngineVersion": engine_version,
+        }
     return result
 
 
@@ -374,9 +397,7 @@ def main():
 
 
 @main.command()
-@click.option(
-    "--parameters", required=True, help="The parameters to audit, comma-separated."
-)
+@click.option("--parameter", required=True, help="The parameter to audit.")
 @click.option(
     "--db-name-like",
     required=False,
@@ -384,10 +405,16 @@ def main():
     help="A string to select databases by name.",
 )
 @click.option(
-    "--db-exclude-like",
+    "--db-name-not-like",
     required=False,
     default=None,
     help="A string to exclude databases by name.",
+)
+@click.option(
+    "--value-not-like",
+    required=False,
+    default=None,
+    help="Exclude databases that have this desired value for the parameter.",
 )
 @click.option(
     "--fmt",
@@ -395,16 +422,21 @@ def main():
     required=False,
     help="The print format to use, either CSV or pretty table.",
 )
-def audit(parameters, db_name_like, db_exclude_like, fmt):
+@click.option(
+    "--show-all/--dont-show-all",
+    default=False,
+    required=False,
+    help="Show all values even if suggested value equals value.",
+)
+def audit(parameter, db_name_like, db_name_not_like, value_not_like, fmt, show_all):
     """Audit database parameter groups for a parameter value."""
     # Get all the parameters we want to audit (comma-separated)
     CSV = "csv"
-    parameters = list(map(lambda x: x.strip(), parameters.split(",")))
 
     # Fetch all DBs and their parameter group names
-    dbs = _dbs_and_parameter_groups(db_name_like, db_exclude_like)
+    dbs = _dbs_and_parameter_groups(db_name_like, db_name_not_like)
 
-    headers = ["DB", "Parameter Group"] + parameters
+    headers = ["DB", "Parameter Group", parameter, "Suggested Value"]
 
     # For pretty table
     table = PrettyTable(headers)
@@ -414,19 +446,45 @@ def audit(parameters, db_name_like, db_exclude_like, fmt):
     writer = csv.writer(file)
     writer.writerow(headers)
 
-    for db in tqdm(dbs, disable=(fmt == CSV)):
-        parameter_group = dbs[db]
-        row = [db, parameter_group]
-        for parameter in parameters:
-            row += [_parameter_group_parameter(parameter_group, parameter).value()]
-        table.add_row(row)
-        writer.writerow(row)  # A little wasteful since we will only show one but...
+    for name, settings in tqdm(dbs.items(), disable=(fmt == CSV)):
+        parameter_group, engine_version = (
+            settings["DBParameterGroupName"],
+            settings["EngineVersion"],
+        )
+        row = [name, parameter_group]
+        param = _parameter_group_parameter(parameter_group, parameter)
+
+        # Exclude known "good" values.
+        if value_not_like is not None and value_not_like == param.value():
+            continue
+
+        # Get the suggested value from our library.
+        if param.name() in suggested_parameter_values:
+            suggested_value = suggested_parameter_values[param.name()]
+        else:
+            suggested_value = None
+
+        # Eliminate values that match suggested values.
+        if (
+            show_all is False
+            and suggested_value is not None
+            and value_not_like is None
+            and suggested_value == param.value()
+        ):
+            continue
+
+        row += ["{} ({})".format(param.value(), param.unit().lower()), suggested_value]
+        if fmt == CSV:
+            writer.writerow(row)
+        else:
+            table.add_row(row)
+
     if fmt == CSV:
         print(file.getvalue())
     else:
         print(table)
 
-    # Always close a file
+    # Flush
     file.close()
 
 
@@ -467,7 +525,9 @@ def pg_compare(target_db_url, other_db_url):
             if a.name() == b.name():
                 if a != b:
                     diff += 1
-                    table.add_row([a.name(), a.value(), b.value(), a.unit().lower()])
+                    table.add_row(
+                        [a.name(), a.value()[:50], b.value()[:50], a.unit().lower()]
+                    )
 
     if diff == 0:
         _result("No differences.")
@@ -507,7 +567,7 @@ def rds_compare(target_db, parameter_group, other_db):
 
         if a != b:
             diffs += 1
-            table.add_row([a.name(), a.value(), b.value(), b.unit().lower()])
+            table.add_row([a.name(), a.value()[:50], b.value()[:50], a.unit()])
 
     if diffs == 0:
         _result("No differences.")
