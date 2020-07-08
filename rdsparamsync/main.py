@@ -18,7 +18,7 @@ from io import StringIO
 from prettytable import PrettyTable  # Pretty table output
 from colorama import Fore
 
-VERSION = "0.2-alpha1"
+VERSION = "0.2-alpha2"
 
 __version__ = VERSION
 __author__ = "Lev Kokotov <lev.kokotov@instacart.com>"
@@ -103,7 +103,7 @@ def _parameter_group_parameter(parameter_group_name, parameter):
         return p
     except IndexError:
         # _error("Parameter {} not found in parameter group {}.".format(parameter, parameter_group_name), exit_on_error=False)
-        return UnknownPostgreSQLParameter({"name": parameter})
+        return UnknownPostgreSQLParameter(parameter)
 
 
 def _databases():
@@ -180,7 +180,7 @@ def _find(parameter, parameter_group):
         p = RDSParameter(p)
         if p.name() == parameter:
             return p
-    return UnknownPostgreSQLParameter({"name": parameter})
+    return UnknownPostgreSQLParameter(parameter)
 
 
 def _exec(cur, query, params=None):
