@@ -18,7 +18,7 @@ from io import StringIO
 from prettytable import PrettyTable  # Pretty table output
 from colorama import Fore
 
-VERSION = "0.2"
+VERSION = "0.2-alpha1"
 
 __version__ = VERSION
 __author__ = "Lev Kokotov <lev.kokotov@instacart.com>"
